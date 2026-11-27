@@ -1,169 +1,209 @@
 """
-Coletor de dados via Web Scraping HTML do catálogo Itch.io.
+Coletor de dados via Web Scraping HTML (BeautifulSoup) do catálogo Itch.io.
 
 Responsável: Victor Emanuel Oliveira Silva
 Saída esperada: data/raw/itchio_raw.csv
 Executar: python -m collectors.itchio_collector
+
+Percorre páginas de listagem por gênero e tag, extrai os dados
+dos cards de jogos e salva o resultado bruto em data/raw/itchio_raw.csv.
+
+Uso ético:
+- Respeita o robots.txt do itch.io (evita /search, /checkout e /download)
+- Utiliza o EthicalHTTPClient com rate limiting e User-Agent acadêmico
+- Coleta apenas informações públicas da listagem
 """
 
 from __future__ import annotations
-import time
-from urllib.parse import urljoin, urlparse, parse_qs
+
+import logging
+from typing import Any
+
 from bs4 import BeautifulSoup
 
 from collectors.utils import EthicalHTTPClient, save_raw_csv
 
+logger = logging.getLogger(__name__)
+
+# Configurações da coleta
 BASE_URL = "https://itch.io"
-OUTPUT_PATH = "data/raw/itchio_raw.csv"
 
-GENRES = ["action", "rpg", "adventure", "horror", "strategy", "simulator", "puzzle"]
-TAGS = ["shooter", "platformer", "roguelike",
-        "jrpg", "turn-based", "action-rpg", 
-        "visual-novel", "point-and-click", "interactive-fiction", 
-        "psychological-horror", "survival-horror", 
-        "tower-defense", "card-game", "tactics", 
-        "management", "life-simulation", "sandbox",
-        "logic", "physics", "escape-room"]
+# Caminhos de navegação por gênero e tag (públicos e permitidos pelo robots.txt)
+BROWSE_PATHS = [
+    "/games/genre-action",
+    "/games/genre-adventure",
+    "/games/genre-rpg",
+    "/games/genre-strategy",
+    "/games/genre-simulation",
+    "/games/genre-puzzle",
+    "/games/tag-horror",
+    "/games/tag-pixel-art",
+    "/games/tag-platformer",
+    "/games/tag-shooter",
+    "/games/tag-roguelike",
+    "/games/tag-jrpg",
+    "/games/tag-turn-based",
+    "/games/tag-actiob-rpg",
+    "/games/tag-visual-novel",
+    "/games/tag-point-and-click",
+    "/games/tag-interactive-fiction",
+    "/games/tag-tower-defense",
+    "/games/tag-card-game",
+    "/games/tag-tactics",
+    "/games/tag-management",
+    "/games/tag-life-simulation",
+    "/games/tag-sandbox",
+    "/games/tag-logic",
+    "/games/tag-physics",
+    "/games/tag-escape-room",
+    "/games/tag-psychological-horror",
+    "/games/tag-survival-horror",
+]
 
-def scrape_listing(base_path: str, source_type: str, source_value: str, max_pages: int = 5) -> list:
-    """
-    Raspa uma listagem do itch.io (gênero ou tag) com paginação.
+# Limite máximo de páginas por caminho (evitar sobrecaregar o servidor)
+MAX_PAGES_PER_PATH = 5
+
+
+# Funções auxiliares de extração
+def _parse_game_cell(cell: Any) -> dict[str, Any] | None:
     
-    :param base_path: Caminho base da URL (ex: "/games/genre-action").
-    :param source_type: "genre" ou "tag" (para registrar a origem do dado).
-    :param source_value: Valor do gênero ou tag (ex: "action").
-    :param max_pages: Número máximo de páginas a serem coletadas (evita sobrecarga).
-    :return: Lista de dicionários com os dados brutos dos jogos.
-    """
-    client = EthicalHTTPClient()  # Cliente HTTP ético do projeto (respeita robots.txt e rate limit)
-    games_data = []
+    # Extrai os dados de um único card `.game_cell`
+    # Retorna None se o card não contiver as informações mínimas (Título e URL)
+    
+    title_tag = cell.select_one(".title.game_link")
+    if not title_tag:
+        return None
+
+    title = title_tag.get_text(strip=True)
+    url = title_tag.get("href", "")
+
+    # Gênero principal
+    genre_tag = cell.select_one(".game_genre")
+    genre = genre_tag.get_text(strip=True) if genre_tag else ""
+
+    # Autor/Desenvolvedor
+    author_tag = cell.select_one(".game_author a")
+    author = author_tag.get_text(strip=True) if author_tag else ""
+    author_url = author_tag.get("href", "") if author_tag else ""
+
+    # Preço (Ausência de .price_value indica jogo gratuito)
+    price_tag = cell.select_one(".price_tag .price_value")
+    price = price_tag.get_text(strip=True) if price_tag else "Free"
+
+    # Descrição curta (Opcional)
+    desc_tag = cell.select_one(".game_text")
+    description = desc_tag.get_text(strip=True) if desc_tag else ""
+
+    # Rating (Opcional)
+    rating_tag = cell.select_one(".game_rating")
+    rating = rating_tag.get_text(strip=True) if rating_tag else ""
+
+    return {
+        "title": title,
+        "url": url,
+        "genre": genre,
+        "author": author,
+        "author_url": author_url,
+        "price": price,
+        "description": description,
+        "rating": rating,
+        "source_path": cell.get("data-path", ""),
+    }
+
+
+def _extract_games_from_page(html: str, source_path: str) -> list[dict[str, Any]]:
+    # Recebe o HTML de uma página de listagem e retorna uma lista de registros
+    
+    soup = BeautifulSoup(html, "html.parser")
+    records: list[dict[str, Any]] = []
+
+    for cell in soup.select(".game_cell"):
+        record = _parse_game_cell(cell)
+        if record:
+            record["source_path"] = source_path
+            records.append(record)
+
+    return records
+
+
+def _has_next_page(soup: BeautifulSoup) -> bool:
+    # Verifica se a página atual possui um link para a próxima página
+    return soup.select_one('link[rel="next"]') is not None
+
+
+# Funções principais de coleta
+def _scrape_browse_path(
+    client: EthicalHTTPClient,
+    path: str,
+    max_pages: int = MAX_PAGES_PER_PATH,
+) -> list[dict[str, Any]]:
+    
+    # Iterar pelas páginas de um caminho de navegação (Gênero ou Tag)
+    # Retorna todos os registros coletados.
+    
+    all_records: list[dict[str, Any]] = []
     page = 1
-    
+
     while page <= max_pages:
-        # Constrói a URL da página atual (itch.io usa ?page=N para paginação)
-        url = f"{BASE_URL}{base_path}?page={page}"
-        print(f"Coletando: {url}")
-        
+        url = f"{BASE_URL}{path}?page={page}"
+        logger.info("Raspando: %s", url)
+
         try:
-            response = client.get(url)
-            if response.status_code != 200:
-                print(f"Status {response.status_code}. Encerrando paginação.")
-                break
-        except Exception as e:
-            print(f"Erro na requisição: {e}")
+            html = client.get_text(url)
+        except Exception as exc:
+            logger.error("Falha ao acessar %s: %s", url, exc)
             break
-        
-        soup = BeautifulSoup(response.text, "html.parser")
-        
-        # Cada jogo na listagem está dentro de uma div com a classe "game_cell"
-        game_cells = soup.find_all("div", class_="game_cell")
-        if not game_cells:
-            print("Nenhum jogo encontrado nesta página. Fim da paginação.")
+
+        soup = BeautifulSoup(html, "html.parser")
+        records = _extract_games_from_page(html, path)
+        all_records.extend(records)
+
+        logger.info(
+            "  Página %d: %d jogos extraídos (total acumulado: %d)",
+            page,
+            len(records),
+            len(all_records),
+        )
+
+        # Interrompe se não houver mais páginas ou se nenhum jogo foi encontrado
+        if not _has_next_page(soup) or not records:
             break
-        
-        for cell in game_cells:
-            # Extração dos campos de cada jogo
-            # Título (dentro de div.game_title)
-            title_tag = cell.find("div", class_="game_title")
-            title = title_tag.get_text(strip=True) if title_tag else None
-            
-            # Autor (div.game_author)
-            author_tag = cell.find("div", class_="game_author")
-            author = author_tag.get_text(strip=True) if author_tag else None
-            
-            # Link do jogo (a.game_link)
-            link_tag = cell.find("a", class_="game_link")
-            game_url = link_tag["href"] if link_tag and link_tag.has_attr("href") else None
-            if game_url and game_url.startswith("/"):
-                game_url = urljoin(BASE_URL, game_url)
-            
-            # Gênero exibido na listagem (div.game_genre)
-            genre_tag = cell.find("div", class_="game_genre")
-            genre = genre_tag.get_text(strip=True) if genre_tag else "Unknown"
-            
-            # ID do jogo (atributo data-game_id da div)
-            game_id = cell.get("data-game_id")
-            
-            # Montagem do registro bruto
-            record = {
-                "game_id": game_id,
-                "title": title,
-                "author": author,
-                "game_url": game_url,
-                "genre_in_listing": genre,
-                "source_type": source_type,   # "genre" ou "tag"
-                "source_value": source_value, # ex: "action" ou "pixel-art"
-                "listing_page": page,
-                "scraped_at": time.strftime("%Y-%m-%d %H:%M:%S") # Registrar
-            }
-            games_data.append(record)
-        
-        print(f"{len(game_cells)} jogos extraídos da página {page}.")
-        
-        # Verifica se existe um link para a próxima página
-        # O itch.io geralmente usa um link com a classe "next_page" no final da listagem
-        next_link = soup.find("a", class_="next_page")
-        if not next_link:
-            # Alternativa: verificar se há um link com texto "Next" ou "Próximo"
-            next_link = soup.find("a", string=lambda t: t and ("Next" in t or "Próximo" in t))
-        
-        if not next_link:
-            print("Não há link para próxima página. Encerrando.")
-            break
-        
-        # Extrai o número da página do href do link (ex: ?page=2)
-        href = next_link.get("href", "")
-        parsed = urlparse(href)
-        query_params = parse_qs(parsed.query)
-        next_page_num = query_params.get("page", [None])[0]
-        
-        if next_page_num:
-            page = int(next_page_num)
-        else:
-            page += 1
-        
-        # Pausa de cortesia entre páginas (o EthicalHTTPClient pode já fazer isso)
-        time.sleep(1)
-    
-    return games_data
+
+        page += 1
+
+    return all_records
+
 
 def main() -> None:
-    # Iterar sobre gêneros e tags, coleta os dados e salva o CSV bruto
-    
-    all_games = []
-    
-    # Coleta por gênero
-    for genre in GENRES:
-        path = f"/games/genre-{genre}"
-        print(f"\n=== Iniciando coleta por GÊNERO: {genre} ===")
-        data = scrape_listing(path, source_type="genre", source_value=genre, max_pages=3)  # Limite de páginas para teste
-        all_games.extend(data)
-    
-    # Coleta por tag
-    for tag in TAGS:
-        path = f"/games/tag-{tag}"
-        print(f"\n=== Iniciando coleta por TAG: {tag} ===")
-        data = scrape_listing(path, source_type="tag", source_value=tag, max_pages=3)
-        all_games.extend(data)
-    
-    # Salvamento via utilitário do projeto
-    if all_games:
-        # save_raw_csv(data, filename, source_name)
-        save_raw_csv(all_games, "itchio_raw.csv", "itchio")
-        print(f"\nTotal de {len(all_games)} registros salvos em data/raw/itchio_raw.csv")
-    else:
-        print("\nNenhum dado foi coletado. Verifique as URLs ou a conexão.")
+    # Executar a raspagem e salvar o CSV bruto
+    logger.info("Iniciando coleta do itch.io...")
 
-if __name__ == "__main__":
-    main()
+    # Instancia o cliente HTTP ético (rate limit e retries já configurados)
+    with EthicalHTTPClient() as client:
+        all_games: list[dict[str, Any]] = []
 
-"""
-def main() -> None:
-    # Implementar verificação de robots.txt e Web Scraping HTML com BeautifulSoup
-    # usando collectors.utils.EthicalHTTPClient e salvar via save_raw_csv(..., "itchio_raw.csv", "itchio").
-    pass
+        for path in BROWSE_PATHS:
+            logger.info("Coletando caminho: %s", path)
+            records = _scrape_browse_path(client, path)
+            all_games.extend(records)
+
+    if not all_games:
+        logger.warning("Nenhum registro coletado. Verifique os seletores ou a conectividade.")
+        return
+
+    # Salvar os dados brutos em CSV utilizando a função utilitária do projeto
+    output_path = save_raw_csv(
+        records=all_games,
+        filename="itchio_raw.csv",
+        platform="itchio",
+    )
+
+    logger.info(
+        "Coleta finalizada: %d jogos salvos em %s",
+        len(all_games),
+        output_path,
+    )
 
 
 if __name__ == "__main__":
     main()
-    """
