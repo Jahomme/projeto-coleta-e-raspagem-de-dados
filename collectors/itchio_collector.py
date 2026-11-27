@@ -7,7 +7,6 @@ Executar: python -m collectors.itchio_collector
 """
 
 from __future__ import annotations
-import requests
 import time
 from urllib.parse import urljoin, urlparse, parse_qs
 from bs4 import BeautifulSoup
@@ -17,8 +16,14 @@ from collectors.utils import EthicalHTTPClient, save_raw_csv
 BASE_URL = "https://itch.io"
 OUTPUT_PATH = "data/raw/itchio_raw.csv"
 
-GENRES = ["action", "adventure", "puzzle", "rpg", "simulation", "strategy"]
-TAGS = ["pixel-art", "horror", "platformer", "visual-novel", "roguelike"]
+GENRES = ["action", "rpg", "adventure", "horror", "strategy", "simulator", "puzzle"]
+TAGS = ["shooter", "platformer", "roguelike",
+        "jrpg", "turn-based", "action-rpg", 
+        "visual-novel", "point-and-click", "interactive-fiction", 
+        "psychological-horror", "survival-horror", 
+        "tower-defense", "card-game", "tactics", 
+        "management", "life-simulation", "sandbox",
+        "logic", "physics", "escape-room"]
 
 def scrape_listing(base_path: str, source_type: str, source_value: str, max_pages: int = 5) -> list:
     """
@@ -53,7 +58,7 @@ def scrape_listing(base_path: str, source_type: str, source_value: str, max_page
         # Cada jogo na listagem está dentro de uma div com a classe "game_cell"
         game_cells = soup.find_all("div", class_="game_cell")
         if not game_cells:
-            print("  -> Nenhum jogo encontrado nesta página. Fim da paginação.")
+            print("Nenhum jogo encontrado nesta página. Fim da paginação.")
             break
         
         for cell in game_cells:
@@ -89,7 +94,7 @@ def scrape_listing(base_path: str, source_type: str, source_value: str, max_page
                 "source_type": source_type,   # "genre" ou "tag"
                 "source_value": source_value, # ex: "action" ou "pixel-art"
                 "listing_page": page,
-                "scraped_at": time.strftime("%Y-%m-%d %H:%M:%S")
+                "scraped_at": time.strftime("%Y-%m-%d %H:%M:%S") # Registrar
             }
             games_data.append(record)
         
@@ -123,28 +128,27 @@ def scrape_listing(base_path: str, source_type: str, source_value: str, max_page
     return games_data
 
 def main() -> None:
-    """
-    Ponto de entrada: itera sobre gêneros e tags, coleta os dados e salva o CSV bruto.
-    """
+    # Iterar sobre gêneros e tags, coleta os dados e salva o CSV bruto
+    
     all_games = []
     
-    # 1. Coleta por gênero
+    # Coleta por gênero
     for genre in GENRES:
         path = f"/games/genre-{genre}"
         print(f"\n=== Iniciando coleta por GÊNERO: {genre} ===")
         data = scrape_listing(path, source_type="genre", source_value=genre, max_pages=3)  # Limite de páginas para teste
         all_games.extend(data)
     
-    # 2. Coleta por tag
+    # Coleta por tag
     for tag in TAGS:
         path = f"/games/tag-{tag}"
         print(f"\n=== Iniciando coleta por TAG: {tag} ===")
         data = scrape_listing(path, source_type="tag", source_value=tag, max_pages=3)
         all_games.extend(data)
     
-    # 3. Salvamento via utilitário do projeto
+    # Salvamento via utilitário do projeto
     if all_games:
-        # Assumindo que save_raw_csv(data, filename, source_name)
+        # save_raw_csv(data, filename, source_name)
         save_raw_csv(all_games, "itchio_raw.csv", "itchio")
         print(f"\nTotal de {len(all_games)} registros salvos em data/raw/itchio_raw.csv")
     else:
