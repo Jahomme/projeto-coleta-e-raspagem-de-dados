@@ -2,7 +2,7 @@
 Coletor de dados via Web Scraping HTML (BeautifulSoup) do catálogo Itch.io.
 
 Responsável: Victor Emanuel Oliveira Silva
-Saída esperada: data/raw/itchio_raw.csv
+Saída: data/raw/itchio_raw.csv
 Executar: python -m collectors.itchio_collector
 
 Percorre páginas de listagem por gênero e tag, extrai os dados
@@ -25,7 +25,7 @@ from collectors.utils import EthicalHTTPClient, save_raw_csv
 
 logger = logging.getLogger(__name__)
 
-# Configurações da coleta
+# Local da Coleta
 BASE_URL = "https://itch.io"
 
 # Caminhos de navegação por gênero e tag (públicos e permitidos pelo robots.txt)
@@ -43,7 +43,7 @@ BROWSE_PATHS = [
     "/games/tag-roguelike",
     "/games/tag-jrpg",
     "/games/tag-turn-based",
-    "/games/tag-actiob-rpg",
+    "/games/tag-action-rpg",
     "/games/tag-visual-novel",
     "/games/tag-point-and-click",
     "/games/tag-interactive-fiction",
@@ -90,11 +90,11 @@ def _parse_game_cell(cell: Any) -> dict[str, Any] | None:
     price_tag = cell.select_one(".price_tag .price_value")
     price = price_tag.get_text(strip=True) if price_tag else "Free"
 
-    # Descrição curta (Opcional)
+    # Descrição curta
     desc_tag = cell.select_one(".game_text")
     description = desc_tag.get_text(strip=True) if desc_tag else ""
 
-    # Rating (Opcional)
+    # Rating
     rating_tag = cell.select_one(".game_rating")
     rating = rating_tag.get_text(strip=True) if rating_tag else ""
 
@@ -159,7 +159,7 @@ def _scrape_browse_path(
         all_records.extend(records)
 
         logger.info(
-            "  Página %d: %d jogos extraídos (total acumulado: %d)",
+            "Página %d: %d jogos extraídos (total acumulado: %d)",
             page,
             len(records),
             len(all_records),
