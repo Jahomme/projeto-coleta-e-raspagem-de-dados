@@ -97,3 +97,31 @@ python -m processing.clean_and_merge
 # Geração de gráficos
 python -m analysis.generate_charts
 ```
+
+### Flags do Coletor da Steam (`collectors.steam_collector`)
+
+| Flag | Valores / Tipo | Padrão | Descrição |
+| :--- | :--- | :--- | :--- |
+| `--sample` | booleana (sem valor) | `False` | Modo de teste rápido: coleta apenas `10` jogos. |
+| `--limit` | `int` | `100` (ou `10` com `--sample`) | Quantidade máxima de jogos únicos a enriquecer e salvar. |
+| `--modes` | `top100in2weeks`, `top100forever`, `top100owned`, `all` (aceita 1 ou mais) | `top100in2weeks top100forever` | Rankings/listas do SteamSpy consultados para descoberta de jogos. |
+| `--skip-live-ccu` | booleana (sem valor) | `False` | Pula a consulta em tempo real ao endpoint `GetNumberOfCurrentPlayers` da Steam (coleta mais rápida usando apenas o `ccu` do SteamSpy). |
+| `--rate-limit` | `float` (segundos) | `1.5` | Intervalo mínimo em segundos entre requisições HTTP consecutivas. |
+| `--output` | `str` (nome do arquivo) | `steam_raw.json` | Nome do arquivo JSON gerado dentro de `data/raw/`. |
+| `-h`, `--help` | — | — | Exibe a ajuda completa das opções no terminal. |
+
+**Exemplos de uso:**
+
+```bash
+# Teste rápido com 10 jogos
+python -m collectors.steam_collector --sample
+
+# Coletar apenas o ranking das últimas 2 semanas em arquivo separado
+python -m collectors.steam_collector --modes top100in2weeks --output steam_2weeks_raw.json
+
+# Coletar apenas o ranking histórico (forever)
+python -m collectors.steam_collector --modes top100forever --output steam_forever_raw.json
+
+# Coletar todos os jogos únicos da união dos dois rankings sem a chamada extra de live_player_count
+python -m collectors.steam_collector --limit 200 --skip-live-ccu
+```
